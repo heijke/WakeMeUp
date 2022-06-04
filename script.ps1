@@ -1,13 +1,15 @@
 # Include WPF
-Add-Type -AssemblyName PresentationCore, PresentationFramework
+Add-Type -AssemblyName PresentationFramework
 
 # Variables
-$DestPort = 9
+$DstPort = 9
 $NICDevices = Get-NetAdapter | Where-Object {$_.Status -eq "Up"} 
 $IfID = $NICDevices.ifIndex
 $LANDevices = Get-NetNeighbor -AddressFamily IPv4 -State Reachable -ifIndex $IfID
 [Byte[]]$SyncStream = (,0xFF * 6)
 [Byte[]]$EthType = (0x08, 0x42)
+
+$DebugPreference = "Continue"
 
 # BEGIN XAML WPF Window definition
 # Generated with the help of https://app.poshgui.com/
@@ -51,23 +53,45 @@ function AssembleRawBytes {
 }
 
 # Sends the Assembled byte array over raw socket
-# And I did not think this through picking this project
-# since socket is inaccessible... Damnit, permissions...
-function SendMagic {
+# Sadly, is not recognized by Wireshark as WoL packet
+# Since still, somehow some header info is added...
+function SendMagicRaw {
     Param(
         [Byte[]]$Buffer
     )
-    $Destination = New-object System.Net.IPEndPoint([IPAddress]::Broadcast, 9)
-    $Socket = New-object System.Net.Sockets.Socket([Net.Sockets.AddressFamily]::InterNetwork,[Net.Sockets.SocketType]::Raw,[Net.Sockets.ProtocolType]::UDP)
-    try{$Socket.SendTo($Buffer, 0, $Buffer.Length, [Net.Sockets.SocketFlags]::None, $Destination)
+    $Destination = New-Object Net.IPEndpoint([Net.IPAddress]::Broadcast, $DstPort)
+    $Socket = New-object System.Net.Sockets.Socket([Net.Sockets.AddressFamily]::InterNetwork,[Net.Sockets.SocketType]::Raw,[Net.Sockets.ProtocolType]::Raw)
+    $Socket.SetSocketOption( "Socket", "Broadcast", 1 )
+    $Socket.SetSocketOption( "Socket", "Debug", 1 )
+    #$Socket.SetSocketOption( "Socket", "DontRoute", 1 )
+    #$Socket.SetSocketOption( "IP", "HeaderIncluded", $true )
+    #$Socket.Connect("255.255.255.255", $DstPort)
+    try{
+    for($i = 0; $i -lt 50; $i++){
+    $Socket.SendTo($Buffer, $Destination)
+    }
         $MsgBox = [Windows.MessageBox]::Show("Magic Packet was sent to the destination of $($ToMAC.SelectedValue)", "Magic Packet sent", "OK")    
     } catch [System.Management.Automation.MethodInvocationException] {
         $MsgBox = [Windows.MessageBox]::Show("I did not think this project through.`nSocket permissions on Windows do not allow me to send raw bytes through socket...`nSorry :(.", "Magic Packet NOT sent", "OK")    
-    } catch {
-        $MsgBox = [Windows.MessageBox]::Show("Was unable to send the Magic Packet to $($ToMAC.SelectedValue)`nSorry.", "Magic Packet NOT sent", "OK")    
+    }  finally {
+        $Socket.Close()
     }
-    Write-Host $Buffer
+    Write-Debug "Contents of sent buffer: $Buffer"
 }
+
+# Just for testing...
+#function SendMagicUDP {
+#    Param(
+#        [Byte[]]$Buffer
+#    )
+#    $Destination = New-Object Net.IPEndpoint([Net.IPAddress]::Broadcast, $DstPort)
+#    $UDPSocket = New-object System.Net.Sockets.UdpClient
+#    $UDPSocket.Connect($Destination)
+#    for($i = 0; $i -lt 50; $i++){
+#    $UDPSocket.Send($Buffer, $Buffer.Length)
+#    }
+#    $UDPSocket.Close()
+#}
 
 # END Functions
  
@@ -80,7 +104,7 @@ catch{throw}
 [xml]$xml = $Xaml
 
 # Make all the properties of GUI visible and reachable from script
-try {$xml.SelectNodes("//*[@Name]") | ForEach-Object { Set-Variable -Name $_.Name -Value $Window.FindName($_.Name) -ErrorAction Stop}}
+try {$xml.SelectNodes("//*[@Name]") | ForEach-Object {Set-Variable -Name $_.Name -Value $Window.FindName($_.Name) -ErrorAction Stop}}
 catch{throw}
 
 # BEGIN Logic
@@ -98,13 +122,13 @@ $FromMAC.Add_SelectionChanged{ $IfID = $NICDevices[$FromMAC.SelectedIndex].ifInd
 
 $ToMAC.Add_SelectionChanged{ $ToIp.Content = $LANDevices[$ToMAC.SelectedIndex].IPAddress
                              # Format the given MAC addresses
-                             $Script:DstMAC = $($ToMAC.SelectedValue -split "-" | ForEach-Object {
-            [System.Convert]::ToByte($_, 16)
-          })
+                             $Script:DstMAC = $($ToMAC.SelectedValue -split "-" | ForEach-Object {[System.Convert]::ToByte($_, 16)})
 }
 
 $Button.Add_Click{
-SendMagic -Buffer (AssembleRawBytes -Dst $DstMAC -Src $SrcMAC)
+SendMagicRaw -Buffer (AssembleRawBytes -Dst $DstMAC -Src $SrcMAC)
+# Just for testing...
+#SendMagicUDP -Buffer (AssembleRawBytes)
 }
 # END Logic
 
